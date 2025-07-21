@@ -2,14 +2,14 @@ import streamlit as st
 import json
 import pandas as pd
 import re
+import _snowflake
+
 from snowflake.snowpark.context import get_active_session
 from bin_request_retrieval import fetch_bin_requests, mark_request_read
 from call_here_api import (
     call_routing_here_api,
-    call_routing_here_api_v7,
     call_geocoding_here_api,
     decode_polyline,
-    decode_shape,
     display_map,
 )
 
@@ -98,29 +98,33 @@ def geocode_address(addr):
         return None, None
 
 
-def handle_address_logic(query, assistant_text):
-    addresses = extract_addresses(query)
-    if not addresses:
+def handle_address_logic(query: str, assistant_text: str):
+    # 1) Extract up to two addresses
+    addrs = extract_addresses(query)
+    if not addrs:
         m = re.search(r"between\s+(.*?)\s+and\s+(.*)", query, flags=re.IGNORECASE)
         if m:
-            addresses = [m.group(1).strip(" ,."), m.group(2).strip(" ,.")]
-    if len(addresses) == 1:
-        lat, lon = geocode_address(addresses[0])
+            addrs = [m.group(1).strip(" ,."), m.group(2).strip(" ,.")]
+
+    # 2) One address → map point
+    if len(addrs) == 1:
+        lat, lon = geocode_address(addrs[0])
         if lat is not None:
-            st.write(f"📍 Map for: **{addresses[0]}**")
+            st.write(f"📍 Map for: **{addrs[0]}**")
             st.map(pd.DataFrame({"lat":[lat],"lon":[lon]}))
-    elif len(addresses) == 2:
-        lat1, lon1 = geocode_address(addresses[0])
-        lat2, lon2 = geocode_address(addresses[1])
+        return
+
+    # 3) Two addresses → route
+    if len(addrs) == 2:
+        lat1, lon1 = geocode_address(addrs[0])
+        lat2, lon2 = geocode_address(addrs[1])
         if None in (lat1, lon1, lat2, lon2):
             st.error("Could not geocode one or both addresses.")
             return
-        try:
-            here_v8 = call_routing_here_api((lat1, lon1),(lat2, lon2))
-            coords  = decode_polyline(here_v8)
-        except Exception:
-            here_v7 = call_routing_here_api_v7((lat1, lon1),(lat2, lon2))
-            coords   = decode_shape(here_v7)
+
+        # single v8 call
+        here_json = call_routing_here_api((lat1, lon1), (lat2, lon2))
+        coords    = decode_polyline(here_json)
         display_map(coords)
 
 
@@ -156,7 +160,7 @@ def snowflake_api_call(query, limit=10):
 
 
 def main():
-    st.title("Webinar Intelligent Sales Assistant")
+    st.title("🚚Bin Management Assistant")
 
     tab1, tab2 = st.tabs(["Review Requests","Assistant"])
 

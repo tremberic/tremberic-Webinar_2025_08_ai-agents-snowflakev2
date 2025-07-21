@@ -1,21 +1,18 @@
 # call_here_api.py
-import streamlit as st
 import os
 import _snowflake
 import requests
-#import flexpolyline
 from typing import Tuple, Dict, List, Union
+from flexpolyline import decode
 
-# import flexpolyline  # pip install flexpolyline
 
 secret = _snowflake.get_generic_secret_string("here_api_key")
 os.environ["HERE_API_KEY"] = secret
 
-
 def call_geocoding_here_api(address: str) -> Dict:
     params = {
-        "q": address,
-        "apiKey": secret,  # camelCase for Geocoding API
+        "q":      address,
+        "apiKey": secret,
     }
     resp = requests.get(
         "https://geocode.search.hereapi.com/v1/geocode",
@@ -29,12 +26,10 @@ def call_geocoding_here_api(address: str) -> Dict:
 def call_routing_here_api(
     origin: Tuple[float, float],
     destination: Tuple[float, float],
-) -> Tuple[Dict, dict]:
-    # 1) Proof we entered the function
-    #print("⚠️ call_routing_here_api() was called")
-    #raise RuntimeError("forced crash so we know we ran it")
-
-    # 2) (Unreachable for now) your real logic:
+) -> Dict:
+    """
+    Call HERE Routing v8 and return the JSON.
+    """
     params = {
         "transportMode": "car",
         "origin":        f"{origin[0]},{origin[1]}",
@@ -42,57 +37,24 @@ def call_routing_here_api(
         "return":        "polyline",
         "apikey":        secret,
     }
-    st.write(f"🔍 Debug — Dans call_routing_here_api: {params}")
+    # debug print to Streamlit
+    import streamlit as st
+    st.write(f"🔍 Debug — routing v8 params: {params}")
+
     resp = requests.get(
         "https://router.hereapi.com/v8/routes",
         params=params,
         timeout=30
     )
     resp.raise_for_status()
-    return resp.json(), params
-
-
-def call_routing_here_api_v7(
-        origin: Tuple[float, float],
-        destination: Tuple[float, float]
-) -> Dict:
-    """
-    Calls HERE Routing v7 to get a route with an unencoded 'shape' array.
-    """
-    url = "https://route.ls.hereapi.com/routing/7.2/calculateroute.json"
-    params = {
-        "apiKey": secret,
-        "waypoint0": f"geo!{origin[0]},{origin[1]}",
-        "waypoint1": f"geo!{destination[0]},{destination[1]}",
-        "mode": "fastest;car;traffic:disabled",
-        "representation": "display",  # ← returns 'shape' instead of polyline
-        "legAttributes": "shape"  # ← include the raw coordinate list
-    }
-    resp = requests.get(url, params=params, timeout=30)
-    resp.raise_for_status()
     return resp.json()
 
-def decode_shape(response: dict) -> list[tuple[float, float]]:
-    """
-    Given the JSON from the v7 HERE API, pull out
-    response → route[0] → leg[0] → shape,
-    which is an array of "lat,lon" strings,
-    and return [(lat, lon), …].
-    """
-    # Drill into the JSON to get the array of "lat,lon" strings
-    shape = response["response"]["route"][0]["leg"][0]["shape"]
-    # Split each "lat,lon" and convert to floats
-    coords = [
-        (float(lat), float(lon))
-        for lat, lon in (point.split(",") for point in shape)
-    ]
-    return coords
 
 def decode_polyline(data: Union[str, Dict]) -> List[Tuple[float, float]]:
     """
     Decode either:
       - a HERE JSON response (dict) by recursing into routes→sections→polyline
-      - or a flexible‑polyline string by calling flexpolyline.decode()
+      - or a flexpolyline string by calling the imported decode()
     """
     if isinstance(data, dict):
         coords: List[Tuple[float, float]] = []
@@ -103,30 +65,55 @@ def decode_polyline(data: Union[str, Dict]) -> List[Tuple[float, float]]:
                     coords.extend(decode_polyline(poly))
         return coords
 
-    # otherwise it's a flexible‑polyline string
-    return flexpolyline.decode(data)
+    # Otherwise it's the flexpolyline‐encoded string
+    return decode(data)
 
+
+
+
+# call_here_api.py (just replace your old display_map with this)
+
+# in call_here_api.py
 
 def display_map(coords: List[Tuple[float, float]]):
     import pandas as pd
-#    import pydeck as pdk
     import streamlit as st
+    import pydeck as pdk
 
     if not coords:
-        st.write("No coordinates to display.")
+        st.write("No route to display.")
         return
 
-    df = pd.DataFrame(coords, columns=["lat", "lon"])
+    # Turn [(lat, lon), …] → [[ [lon, lat], … ]]
+    path = [[[lon, lat] for lat, lon in coords]]
+    df = pd.DataFrame({"path": path})
+
+    # Draw the route in bright red
     layer = pdk.Layer(
         "PathLayer",
         data=df,
-        get_path="[[lon, lat] for lon, lat in zip(df['lon'], df['lat'])]",
-        get_width=5,
-        pickable=False
+        pickable=False,
+        get_path="path",
+        get_width=10,
+        get_color=[255, 0, 0],      # bright red
+        get_dash_array=[0, 0],      # [dashLength, gapLength] of 0 → solid
+        width_min_pixels=2,         # minimum pixel width
+        width_max_pixels=10         # maximum pixel width
     )
+
+    # Center on the first point
+    start_lat, start_lon = coords[0]
     view_state = pdk.ViewState(
-        latitude=df["lat"].mean(),
-        longitude=df["lon"].mean(),
-        zoom=10
+        latitude=start_lat,
+        longitude=start_lon,
+        zoom=11
     )
-    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state))
+
+    # Use a light basemap style
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        map_style="mapbox://styles/mapbox/light-v9"
+    )
+
+    st.pydeck_chart(deck)
