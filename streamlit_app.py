@@ -248,33 +248,36 @@ def main():
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
-        # replay chat
+        # replay prior chat
         for msg in st.session_state.messages:
-            who = "You" if msg["role"]=="user" else "Assistant"
+            who = "You" if msg["role"] == "user" else "Assistant"
             st.markdown(f"**{who}:** {msg['content']}")
 
         query = st.text_input("Your question:", key="chat_input")
         if st.button("Send", key="chat_send") and query:
-            st.session_state.messages.append({"role":"user","content":query})
+            st.session_state.messages.append({"role": "user", "content": query})
 
-            # 1) address logic?
+            # 1) Address/route override?
             if handle_address_logic(query, ""):
-                return  # done
+                # mapping has been displayed, skip the rest
+                return
 
-            # 2) else call Cortex agent
+            # 2) Fire the 2‑tool agent
             events = snowflake_api_call(query)
             text, sql, citations = process_sse_response(events or [])
 
-            # 3) if no agent output at all → plain completion
-            if not text and not sql and not citations:
+            # 3) FALLBACK on plain completion *any time* there was no SQL
+            did_fallback = False
+            if not sql:
                 text = direct_completion(query)
+                did_fallback = True
 
-            # 4) show assistant text
+            # 4) Show the assistant’s answer
             if text:
-                st.session_state.messages.append({"role":"assistant","content":text})
+                st.session_state.messages.append({"role": "assistant", "content": text})
                 st.markdown(f"**Assistant:** {text}")
 
-            # 5) show SQL + results
+            # 5) If we did generate SQL, show it and its results
             if sql:
                 st.markdown("### Generated SQL")
                 st.code(sql, language="sql")
@@ -283,25 +286,26 @@ def main():
                     st.write("### Results")
                     st.dataframe(df)
 
-            # 6) show citations
-            if citations:
+            # 6) Only show citations if we *didn’t* fallback
+            if not did_fallback and citations:
                 st.write("Citations:")
                 for c in citations:
-                    lbl = c["source_id"] or "source"
+                    lbl = str(c.get("source_id", "source"))
+                    doc_id = c.get("doc_id", "")
                     q_sql = (
                         "SELECT transcript_text "
                         "FROM sales_conversations "
-                        f"WHERE conversation_id = '{c['doc_id']}'"
+                        f"WHERE conversation_id = '{doc_id}'"
                     )
                     df2 = run_snowflake_query(q_sql)
                     txt = "No transcript available"
                     if df2 is not None:
                         pdf = df2.to_pandas()
                         if not pdf.empty:
-                            txt = pdf.iloc[0,0]
+                            txt = pdf.iloc[0, 0]
                     with st.expander(lbl):
-                        st.write(txt)
-
+                        st.write(txt)         
+                        
     # ── Sidebar: reset chat
     with st.sidebar:
         if st.button("🔄 New Conversation", key="new_chat"):
